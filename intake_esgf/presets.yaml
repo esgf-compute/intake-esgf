@@ -1,0 +1,120 @@
+default: CMIP5
+presets:
+  CMIP3:
+    constraints:
+      project: CMIP3
+    fields:
+    - data_node
+    - ensemble
+    - experiment
+    - institute
+    - model
+    - project
+    - realm
+    - time_frequency
+    - variable
+  CMIP5:
+    constraints:
+      project: CMIP5
+    fields:
+    - cf_standard_name
+    - cmor_table
+    - ensemble
+    - experiment
+    - experiment_family
+    - forcing
+    - institute
+    - model
+    - product
+    - project
+    - realm
+    - time_frequency
+    - variable
+  CMIP6:
+    constraints:
+      project: CMIP6
+    fields:
+    - activity_id
+    - cf_standard_name
+    - experiment_id
+    - frequency
+    - grid
+    - grid_label
+    - institution_id
+    - mip_era
+    - model_cohort
+    - nominal_resolution
+    - pid
+    - product
+    - project
+    - realm
+    - variable
+  CREATE-IP:
+    constraints:
+      project: CREATE-IP
+    fields:
+    - cf_standard_name
+    - data_node
+    - experiment
+    - experiment_family
+    - institute
+    - model
+    - product
+    - project
+    - realm
+    - time_frequency
+    - variable
+  e3sm:
+    constraints:
+      project: e3sm
+    fields:
+    - atmos_grid_resolution
+    - campaign
+    - cf_standard_name
+    - ensemble_member
+    - experiment
+    - experiment_family
+    - ocean_grid_resolution
+    - period
+    - project
+    - realm
+    - regridding
+    - science_driver
+    - source
+    - time_frequency
+    - variable
+  input4mips:
+    constraints:
+      project: input4mips
+    fields:
+    - Conventions
+    - activity_id
+    - cf_standard_name
+    - dataset_status
+    - frequency
+    - grid_label
+    - institution_id
+    - mip_era
+    - nominal_resolution
+    - product
+    - project
+    - realm
+    - source_id
+    - variable
+  obs4MIPs:
+    constraints:
+      project: obs4MIPs
+    fields:
+    - activity_id
+    - cf_standard_name
+    - dataset_id
+    - frequency
+    - grid_label
+    - institution_id
+    - nominal_resolution
+    - product
+    - project
+    - realm
+    - region
+    - source_id
+    - variable

@@ -1,0 +1,31 @@
+metadata:
+  version: 1
+sources:
+  cmip5:
+    driver: esgf-catalog
+    args:
+      preset: CMIP5
+  cmip6:
+    driver: esgf-catalog
+    args:
+      preset: CMIP6
+  e3sm:
+    driver: esgf-catalog
+    args:
+      preset: e3sm
+  cmip3:
+    driver: esgf-catalog
+    args:
+      preset: CMIP3
+  input4mips:
+    driver: esgf-catalog
+    args:
+      preset: input4mips
+  obs4mips:
+    driver: esgf-catalog
+    args:
+      preset: obs4MIPs
+  create_ip:
+    driver: esgf-catalog
+    args:
+      preset: CREATE-IP
