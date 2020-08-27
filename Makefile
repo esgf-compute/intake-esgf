@@ -32,8 +32,8 @@ clean:
 	rm $(PWD)/.tempdir
 	rm -rf $(workdir)
 
-.PHONY: prep-feedstock
-prep-feedstock:
+.PHONY: prep-conda
+prep-conda:
 	rm -f $(conda_rc)
 	rm -rf $(feedstock)
 
@@ -44,9 +44,14 @@ prep-feedstock:
 
 	echo -e "conda-build:\n  root-dir: $(artifacts)\n" >> $(conda_rc)
 
+.PHONY: build-environment
+build-environment: prep-conda
 	$(conda_act) base; \
-		$(conda_cmd) create -n build conda-build anaconda-client conda-smithy; \
-		$(conda_act) build; \
+		$(conda_cmd) create -n build conda-build anaconda-client conda-smithy
+
+.PHONY: prep-feedstock
+prep-feedstock: build-environment
+	$(conda_act) build; \
 		$(conda_cmd) smithy init --feedstock-directory $(feedstock) recipe/; \
 		$(conda_cmd) smithy rerender --feedstock_directory $(feedstock)
 
@@ -66,3 +71,11 @@ dev-environment:
 		$(conda_cmd) create -n dev-intake-esgf -c conda-forge $(pkgs); \
 		$(conda_act) dev-intake-esgf; \
 		pip install -e .
+
+.PHONY: build-docs
+build-docs: build-environment
+	$(conda_act) build; \
+		$(conda_cmd) install -c conda-forge sphinx recommonmark; \
+		make -C docsrc/ html
+
+	@cp -a docsrc/build/html/. docs/
