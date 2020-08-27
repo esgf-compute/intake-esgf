@@ -75,7 +75,7 @@ dev-environment:
 .PHONY: build-docs
 build-docs: build-environment
 	$(conda_act) build; \
-		$(conda_cmd) install -c conda-forge sphinx sphinx_rtd_theme recommonmark; \
+		$(conda_cmd) install -c conda-forge sphinx sphinx_rtd_theme recommonmark m2r; \
 		make -C docsrc/ html
 
 	@cp -a docsrc/build/html/. docs/
