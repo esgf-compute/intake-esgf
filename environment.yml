@@ -1,0 +1,8 @@
+name: intake-esgf
+channels:
+  - defaults
+  - conda-forge
+  - jasonb857
+dependencies:
+  - ipywidgets
+  - intake-esgf
