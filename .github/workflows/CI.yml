@@ -25,5 +25,13 @@ jobs:
       - uses: actions/checkout@v2
       - name: Setup environment
         run: |
-          export 
-          echo $PWD
+          [[ ! -e ${PWD}/conda.sh ]] && curl https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -L -o conda.sh
+          
+          bash ./conda.sh -b -p ${PWD}/conda
+          
+          export PATH=${PWD}/conda/bin:${PATH}
+          
+          conda init bash
+          
+          conda env list
+          
