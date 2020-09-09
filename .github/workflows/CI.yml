@@ -33,5 +33,9 @@ jobs:
           
           conda init bash
           
-          conda env list
+          conda install -c conda-forge conda-build anaconda-client -y
+          
+          make build
+          
+          
           
