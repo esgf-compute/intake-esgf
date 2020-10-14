@@ -6,6 +6,7 @@ setup(
     packages=find_packages(),
     entry_points={
         "intake.drivers": [
+            "esgf-opendap = intake_esgf.core:ESGFOpenDapSource",
             "esgf-catalog = intake_esgf.core:ESGFCatalog",
             "esgf-default-catalog = intake_esgf.core:ESGFDefaultCatalog",
         ],

@@ -1,173 +1,257 @@
+import datetime
 import math
 import os
 import logging
 from collections import abc
+from collections import OrderedDict
 from contextlib import contextmanager
 
-import intake
 import requests
 import pandas as pd
 import yaml
 import pkg_resources
+from intake import catalog
+from intake.catalog import exceptions
+from intake.catalog import local
+from intake.source import base
 
 logger = logging.getLogger("intake_esgf.core")
 
 
-class ESGFCatalogError(intake.catalog.exceptions.CatalogException):
+class ESGFCatalogError(exceptions.CatalogException):
     pass
 
 
 class PresetDoesNotExistError(ESGFCatalogError):
     pass
 
+class ESGFEntryMissingDriver(ESGFCatalogError):
+    def __init__(self, dataset_id):
+        msg = f"Dataset {dataset_id!r} could not be handled by any intake drivers"
+        super(ESGFEntryMissingDriver, self).__init__(msg)
 
-class ESGFCatalogEntry(intake.catalog.entry.CatalogEntry):
-    def __init__(self, df, **kwargs):
-        """ ESGFCatalogEntry.
+
+drivers = OrderedDict([
+    ("OPENDAP", "esgf-opendap"),
+    ("HTTPServer", "netcdf"),
+])
+
+
+def fix_col(x):
+    if isinstance(x[0], (list, tuple)) and len(x[0]) == 1:
+        return x[0][0]
+    return x
+
+
+class ESGFOpenDapSource(base.DataSource):
+    """ESGF OPENDap source.
+    """
+    version = "1.0.0"
+    name = "esgf-opendap"
+    container = "xarray"
+    partition_access = False
+
+    def __init__(self, url, chunks=None, xarray_kwargs=None, metadata=None, **kwargs):
+        """ESGFOpenDapSource __init__.
 
         Args:
-            df (pandas.DataFrame): Dataframe holding search results.
-            chunks (dict): Mapping dimensions to chunk sizes.
-            container (str, list): List of containers to attempt to open data with.
-            xarray_kwargs (dict): Keyword options to be passed to xarray open functions.
-            storage_options (dict): Keyword options to be password to fsspec open_files.
-            description (str): Description of the catalog entry.
+            url: URL of ESGF search node.
+            chunks: Mapping of coords and chunk sizes.
+            xarray_kwargs: Arguments passed to xarray.
+            metadata: Metadata describing the source.
         """
-        self._df = df
-        self.chunks = kwargs.get("chunks", {})
-        self.containers = kwargs.get("container", "netcdf")
-        self.xarray_kwargs = kwargs.get("xarray_kwargs", {})
-        self.storage_options = kwargs.get("storage_options", {})
-        self.description = kwargs.get("description", "")
+        self._url = url
+        self._chunks = chunks
+        self._kwargs = xarray_kwargs or kwargs
+        self._ds = None
 
-        if not isinstance(self.containers, list):
-            self.containers = [self.containers]
+        super(ESGFOpenDapSource, self).__init__(metadata=metadata)
 
-        self.container_map = {
-            "netcdf": ["OPENDAP", "HTTPServer"],
-        }
+    def _open_dataset(self):
+        """Opens an xarray dataset.
 
-        super().__init__()
+        Opens dataset depending on number of of source files.
+        """
+        import xarray as xr
 
-    def get(self):
-        """ Opens source using appropriate driver. """
-        access = dict(
-            (x.split("|")[-1], x.split("|")[0].replace(".html", ""))
-            for x in self._df.url.to_list()[0]
-        )
+        logger.info(f"Opening data with {len(self._url)} files")
 
-        data = None
+        if len(self._url) > 1:
+            self._ds = xr.open_mfdataset(self._url, chunks=self._chunks, **self._kwargs)
+        else:
+            self._ds = xr.open_dataset(self._url[0], chunks=self._chunks, **self._kwargs)
 
-        for container in self.containers:
-            for access_method in self.container_map[container]:
-                if access_method in access:
-                    data = intake.registry[container](
-                        access[access_method],
-                        self.chunks,
-                        xarray_kwargs=self.xarray_kwargs,
-                        storage_options=self.storage_options,
-                    )
+    def _get_schema(self):
+        """Builds a schema for the datasource.
+        """
+        if self._ds is None:
+            self._open_dataset()
 
-                    break
+            metadata = {
+                "dims": dict(self._ds.dims),
+                "data_vars": {k: list(self._ds[k].coords)
+                              for k in self._ds.data_vars.keys()},
+                "coords": tuple(self._ds.coords.keys()),
+            }
 
-        if data is None:
-            raise ESGFCatalogError(
-                f"Did not find container for any access methods {', '.join(list(access))}."
+            metadata.update(self._ds.attrs)
+
+            self._schema = base.Schema(
+                datashape=None,
+                dtype=None,
+                shape=None,
+                npartitions=None,
+                extra_metadata=metadata
             )
 
-        data._entry = self
+        return self._schema
 
-        return data
+    def read(self):
+        "Reads dataset."
+        return self.read_chunked()
 
-    def describe(self):
-        """ Describes the entry. """
-        return {
-            "name": self._df.id.to_list()[0],
-            "container": "xarray",
-            "description": self.description,
-            "direct_access": "allow",
-            "user_parameters": [],
-        }
+    def read_chunked(self):
+        "Reads dataset as chunked."
+        self._load_metadata()
 
+        return self._ds
 
-class ESGFCatalogEntries(abc.Mapping, abc.Sequence):
-    def __init__(self, catalog):
-        """ ESGFCatalogEntries.
+    def to_dask(self):
+        "Loads dataset for dask."
+        return self.read_chunked()
+
+    def close(self):
+        "Closes a dataset."
+        self._ds = None
+
+        self._schema = None
+
+class ESGFCatalogEntry(local.LocalCatalogEntry):
+    """ESGFs catalog entry.
+    """
+    def __init__(self, dataset, files, name, driver, args=None, parameters=None, catalog=None):
+        """ESGFCatalogEntry __init__.
 
         Args:
-            catalog (ESGFCatalog): Reference to the catalog whose entries being managed.
+            dataset: DataFrame containing dataset details.
+            files: DataFrame containing file details.
+            name: Name of the catalog entry.
+            driver: Driver to load data.
+            args: Arguments passed to driver.
+            parameters: List of parameters.
+            catalog: Instance of parent catalog.
+        """
+        self._dataset = dataset
+        self._files = files
+
+        super().__init__(
+            name,
+            "",
+            driver,
+            args=args or {},
+            parameters=parameters or [],
+            catalog=catalog,
+        )
+
+    @classmethod
+    def from_dataframes(cls, dataset, files, catalog=None):
+        """Creates catalog entry from dataframes.
+
+        Args:
+            dataset: DataFrame detailing dataset.
+            files: DataFrame detailing files associated with dataset.
+            catalog: Parent catalog.
+        """
+        name = dataset.id.values[0]
+
+        logger.info(f"Building datasource for {name}")
+
+        access = [x.split("|")[-1] for x in files.url.values[0]]
+
+        logger.info(f"Access methods {access}")
+
+        candidates = [(method, drivers[method]) for method in drivers if method in access]
+
+        logger.info(f"Candidate methods {candidates}")
+
+        def get_file_access(access_methods, method):
+            for x in access_methods:
+                parts = x.split("|")
+
+                if parts[-1] == method:
+                    return parts[0].replace(".html", "")
+
+            raise ESGFEntryMissingDriver(name)
+
+        args = {
+            "url": files.url.apply(get_file_access, method=candidates[0][0]).to_list(),
+        }
+
+        return cls(dataset, files, name, candidates[0][1], args=args, catalog=catalog)
+
+
+class ESGFCatalogEntries(abc.Mapping):
+    """Collection of catalog entries.
+    """
+    def __init__(self, catalog):
+        """ESGFCatalogEntries __init__.
+
+        Args:
+            catalog: Reference to the catalog whose entries being managed.
         """
         self._catalog = catalog
-        self._offset = 0
-        self._num_found = 0
+        self._num_found = None
         self._df = None
 
     def __repr__(self):
-        return f"{self.__class__.__name__}()"
+        return f"<{self.__class__.__name__}: {len(self)}>"
 
     def __getitem__(self, key):
-        """ Get entry.
+        """Gets item from collection.
 
         Args:
-            key (str): Key for item being retrieved.
+            key: Key for item being retrieved.
 
         Returns:
-            ESGFCatalogEntry: Entry related to key.
+            A ESGFCatalogEntry identified by key.
         """
-        if isinstance(key, slice):
-            try:
-                value = self._df.iloc[key]
+        entry = self._df[self._df.id == key].iloc[0:1]
 
-                if len(value) == 0:
-                    raise IndexError()
-            except (AttributeError, IndexError):
-                logger.info(f"Missing entries for {key}")
+        if len(entry) == 0:
+            raise KeyError(key)
 
-                for x in range(key.start, key.stop, self._catalog._limit):
-                    self._next_page(x)
+        files = self._catalog.fetch_files(entry.id.values[0])
 
-                value = self._df.iloc[key]
-        else:
-            entry = self._df[self._df.id == key].iloc[0:1]
-
-            if len(entry) == 0:
-                raise KeyError(key)
-
-            value = ESGFCatalogEntry(
-                entry,
-                container=self._catalog._container,
-                chunks=self._catalog._chunks,
-                storage_options=self._catalog._storage_options,
-            )
-
-        return value
+        return ESGFCatalogEntry.from_dataframes(entry, files, self._catalog)
 
     def _next_page(self, offset):
-        """ Retrieves next search result page.
+        """Gets next page of search results.
 
         Args:
-         offset (int): Offset get retrieve results from.
+         offset: Offset get retrieve results from.
 
         Returns:
-            pandas.DataFrame: DataFrame holding search results.
+            A Pandas Dataframe containing a page of search results.
         """
         limit = self._catalog._limit
 
-        logger.info(f"Requesting page @ offset {offset} length {limit}")
+        logger.info(f"Page offset {offset}")
 
         try:
             page = self._df.iloc[offset : offset + limit]
         except AttributeError:
-            logger.info(f"Did not find page for offset {offset}")
+            logger.info(f"Found not cached page for offset {offset}")
         else:
+            logger.info(f"Found cached page for offset {offset}")
+
             if len(page) > 0:
                 return page
 
         self._num_found, page = self._catalog.fetch_page(offset)
 
-        self._offset += len(page)
-
         page = page.set_index(pd.RangeIndex(offset, offset + len(page)))
+
+        logger.info(f"Adjusted index to {offset} - {offset+len(page)}")
 
         if self._df is None:
             self._df = page
@@ -176,30 +260,48 @@ class ESGFCatalogEntries(abc.Mapping, abc.Sequence):
 
         return page
 
-    def __iter__(self):
-        """ Iterates over search results. """
-        offset = 0
+    def pages(self):
+        """Generates search result pages.
 
-        while True:
+        Yields:
+            A Pandas Dataframe containing search results.
+        """
+        offset = 0
+        limit = self._catalog._limit
+
+        while offset < self._num_found:
             page = self._next_page(offset)
 
+            page_size = len(page)
+
+            logger.info(f"Got page offset {offset} len {page_size}")
+
+            yield page
+
+            offset += page_size
+
+    def num_pages(self):
+        """Returns the number of pages."""
+        if self._num_found is None:
+            self._next_page(0)
+
+        return math.ceil(self._num_found / self._catalog._limit)
+
+    def __iter__(self):
+        """Generates identifiers for each entry."""
+        for page in self.pages():
             for _, x in page.iterrows():
                 yield x.id
 
-            offset += len(page)
-
-            if offset >= self._num_found:
-                break
-
     def __contains__(self, key):
-        """ Checks if map contains key. """
+        """Tests if key is in collection."""
         if self._df is None:
             raise KeyError(key)
 
         return key in self._df.id.values
 
     def __len__(self):
-        """ Number of entries in map. """
+        """Returns the number of entries in collection."""
         if self._df is None:
             self._next_page(0)
 
@@ -280,6 +382,8 @@ class ESGFCatalogEntries(abc.Mapping, abc.Sequence):
         next.on_click(next_page)
         prev.on_click(prev_page)
 
+        update_buttons()
+
         return footer
 
     def _widget(self):
@@ -299,7 +403,7 @@ class ESGFCatalogEntries(abc.Mapping, abc.Sequence):
             return None
 
         self._widget_current_page = 0
-        self._widget_max_pages = 0
+        self._widget_max_pages = self.num_pages()
 
         output = Output()
         center = HBox([output,])
@@ -308,7 +412,7 @@ class ESGFCatalogEntries(abc.Mapping, abc.Sequence):
 
         data = self._next_page(0)
         self._widget_current_page = 1
-        self._widget_max_pages = math.ceil(self._num_found / self._catalog._limit)
+        self._widget_max_pages = self.num_pages()
 
         footer = self._widget_footer(output)
 
@@ -331,107 +435,48 @@ class ESGFCatalogEntries(abc.Mapping, abc.Sequence):
 
         if widget is not None:
             widget._ipython_display_(**kwargs)
-        else:
-            from IPython.display import display
-
-            display(self._df)
-
 
 class ESGFFacetWrapper(abc.Mapping):
+    """Wraps ESGF facets.
+    """
     def __init__(self, items=None):
+        """ESGFFacetWrapper __init__.
+
+        Args:
+            items: A dict mapping facets and values.
+        """
         super().__init__()
 
         self._items = items or {}
 
+    def __repr__(self):
+        return f"<{self.__class__.__name__}: {len(self._items)}>"
+
     def __getitem__(self, key):
+        """Gets item identified by key.
+
+        Args:
+            key: Key identifying item.
+
+        Returns:
+            A list of str values.
+        """
         return self._items[key]
 
     def __iter__(self):
+        """Generates a list of facets names."""
         for x in self._items:
             yield x
 
     def __len__(self):
+        """Returns the number of facets."""
         return len(self._items)
-
-    def _repr_javascript_(self):
-        return f"""
-let values = {{ {",".join([f"{x}: {y}" for x, y in self._items.items()]) } }};
-
-let style = document.createElement("style");
-style.innerHTML = `
-.esgf-facet-container {{
-    display: flex;
-    flex-direction: row;
-    align-items: flex-start;
-    width: 100%;
-}}
-
-.esgf-facet-names {{
-    margin: 8px;
-}}
-
-.esgf-facet-values {{
-    margin: 8px;
-    flex: 1;
-    overflow: auto;
-    height: 200px;
-}}
-`;
-
-let container = document.createElement("div");
-container.setAttribute("class", "esgf-facet-container");
-
-let nameSelect = document.createElement("SELECT");
-nameSelect.setAttribute("id", "facet-keys");
-nameSelect.setAttribute("class", "esgf-facet-names");
-
-Object.keys(values).sort().forEach(function (value, i) {{
-    let c = document.createElement("option");
-    c.text = value;
-    c.value = value;
-    nameSelect.options.add(c, i);
-}});
-
-nameSelect.onchange = function() {{
-    valueSelect.options.length = 0;
-    let selection = document.getElementById("facet-keys").value;
-    values[selection].sort().forEach(function (value, i) {{
-        let c = document.createElement("option");
-        c.text = value;
-        valueSelect.options.add(c, i);
-    }});
-}};
-
-let valueSelect = document.createElement("SELECT");
-valueSelect.setAttribute("class", "esgf-facet-values");
-valueSelect.setAttribute("multiple", true);
-
-values[nameSelect.value].sort().forEach(function (value, i) {{
-    let c = document.createElement("option");
-    c.text = value;
-    valueSelect.options.add(c, i);
-}});
-
-container.appendChild(nameSelect);
-container.appendChild(valueSelect);
-element.appendChild(container);
-element.appendChild(style);
-        """
 
     def _ipython_display_(self, **kwargs):
         widget = self._widget()
 
         if widget is not None:
             widget._ipython_display_(**kwargs)
-        else:
-            from IPython.display import display
-
-            mimetype = {
-                "text/plain": repr(self),
-                "text/javascript": self._repr_javascript_(),
-            }
-
-            display(mimetype, raw=True)
 
     def _widget(self):
         try:
@@ -461,10 +506,20 @@ element.appendChild(style);
         return container
 
 
-class ESGFDefaultCatalog(intake.catalog.local.YAMLFileCatalog):
+class ESGFDefaultCatalog(local.YAMLFileCatalog):
+    """ESGFDefaultCatalog.
+
+    Loads a preset YAML catalog.
+    """
     name = "esgf-default-catalog"
 
     def __init__(self, *args, **kwargs):
+        """ESGFDefaultCatalog __init__.
+
+        Args:
+            *args: Position arguments.
+            **kwargs: Key/value arguments.
+        """
         default_catalog_path = pkg_resources.resource_filename(
             __name__, "default_catalog.yaml"
         )
@@ -472,127 +527,91 @@ class ESGFDefaultCatalog(intake.catalog.local.YAMLFileCatalog):
         super().__init__(default_catalog_path, *args, **kwargs)
 
 
-class ESGFCatalog(intake.catalog.Catalog):
+class ESGFCatalog(catalog.Catalog):
+    """ESGFCatalog.
+    """
     name = "esgf-catalog"
 
-    def __init__(self, *args, **kwargs):
-        """ ESGFCatalog.
+    def __init__(self, url=None, params=None, fields=None, constraints=None, facets=None,
+                 limit=10000, preset=None, presets=None, preset_file=None, metadata=None):
+        """ESGFCatalog __init__.
 
         Args:
-            url (str): URL of ESGF search service.
-            fields (list): List of fields returned from search.
-            constraints (dict): Search constraints, the same as facets.
-            limit (int): The number of results returned per page.
-            facets (dict): Default facets used for search.
-            params (dict): Options for ESGF search service, see `keywords` https://earthsystemcog.org/projects/cog/esgf_search_restful_api.
-            requests_kwargs (dict): Options passed to `requests` calls.
-            storage_options (dict): Options for FSSpec when used by containers.
-            chunks (dict): Chunking used when loading data.
-            preset_file (str): Path to a preset file.
-            preset (str): Name of the preset to use.
-            skip_load (bool): If True then presets are not loaded.
-            container (list): List of containers to use. These are used to
-                find the appropriate container for the access methods available.
-                Order does matter.
+            url: URL of an ESGF index node.
+            params: A dict of search parameters.
+            fields: A list of fields to retrieve.
+            constraints: A dict mapping facets to values that constrain the results.
+            facets: A dict mapping facet names and values to search for.
+            limit: Number of maximum results per page.
+            preset: Facet preset.
+            presets: A dict containing preset definitions.
+            preset_file: A str path to a file containing facet presets.
+            metadata: A dict containing catalog metadata.
         """
-        self._minimum_fields = ["id", "url"]
+        self._required_fields = [
+            "dataset_id",
+            "master_id",
+            "instance_id",
+            "id",
+            "url",
+            "data_node",
+            "size"
+        ]
+
         self._default_params = {
             "format": "application/solr+json",
-            "type": "File",
+            "type": "Dataset",
+            "distrib": "true",
+            "replica": "false",
+            "latest": "true",
         }
 
+        self._params = params or {}
+
         # Search config
-        self._url = kwargs.get("url", "https://esgf-node.llnl.gov/esg-search/search")
-        self._fields = kwargs.get("fields", [])
-        self._constraints = kwargs.get("constraints", {})
-        self._limit = kwargs.get("limit", 100)
-        self._facets = kwargs.get("facets", {})
-        self._params = kwargs.get("params", {})
-
-        # Requests config
-        self._requests_kwargs = kwargs.get("requests_kwargs", {})
-
-        # FSSpec config
-        self._storage_options = kwargs.get("storage_options", {})
-
-        # Container config
-        self._chunks = kwargs.get("chunks", None)
+        self._url = url or "https://esgf-node.llnl.gov/esg-search/search"
+        self._fields = fields or []
+        self._constraints = constraints or {}
+        self._facets = facets or {}
+        self._limit = limit
 
         # Preset config
         default_preset_file = pkg_resources.resource_filename(__name__, "presets.yaml")
-        preset_file = kwargs.get("preset_file", default_preset_file)
-        preset_file = os.environ.get("INTAKE_ESGF_PRESET_FILE", preset_file)
-        self._preset_file = preset_file
-        self._preset = kwargs.get("preset", None)
-        self._skip_load = kwargs.get("skip_load", False)
+        self._preset_file = preset_file or default_preset_file
+        self._presets = presets
+        self._preset = preset
 
-        self._container = kwargs.get("container", "netcdf")
-
-        self._load_preset()
-
-        super().__init__()
+        super().__init__(name=self._preset, metadata=metadata)
 
     @property
-    def entries(self):
-        """ Cached search entries.
-
-        Returns:
-            pandas.DataFrame: DataFrame of cached entries.
-        """
-        return self._entries
-
-    @property
-    def facets(self):
-        return self._facets
-
-    @property
-    def params(self):
-        return self._params
-
-    @property
-    def fields(self):
-        return self._fields
-
-    @property
-    def constraints(self):
-        """ Preset constraints. """
-        return self._constraints
+    def df(self):
+        """Returns DataFrame containing search results."""
+        return self._entries._df
 
     def filter(self, func):
-        """ Filters the current set of reuslts.
+        """Filters current search results.
 
         Args:
-            func (func): Function used to filter the results.
+            func: Function applied to DataFrame.
 
         Returns:
-            ESGFCatalog: Catalog with filter results.
-
-        Examples:
-            >>> import intake_esgf
-            >>> cat = intake_esgf.ESGFCatalog()
-            >>> page = cat.fetch_page(variable="clt,tas", frequency="mon")
-            >>> results = cat.filter(lambda x: x.variable.to_list()[0] == "tas")
+            An ESGFCatalog containing a subset of the search results.
         """
         entries = ESGFCatalogEntries(None)
 
-        entries._df = pd.concat([y for _, y in self._entries._df.iterrows() if func(y)])
-
-        if not isinstance(entries._df, pd.DataFrame):
-            entries._df = entries._df.to_frame().transpose()
+        entries._df = self._entries._df[func]
 
         cat = ESGFCatalog.from_dict(
             entries,
             url=self._url,
+            params=self._params,
             fields=self._fields,
             constraints=self._constraints,
-            limit=self._limit,
-            params=self._params,
-            requests_kwargs=self._requests_kwargs,
-            storage_options=self._storage_options,
             facets=self._facets,
-            skip_load=True,
-            container=self._container,
-            chunks=self._chunks,
+            limit=self._limit,
+            preset=self._preset,
+            presets=self._presets,
+            preset_file=self._preset_file,
         )
 
         entries._catalog = cat
@@ -600,81 +619,86 @@ class ESGFCatalog(intake.catalog.Catalog):
         return cat
 
     def search(self, **kwargs):
-        """ Refines the search criteria.
+        """Searchs for datasets matching facets.
 
         Args:
-            **kwargs: Key/value pairs of facets.
+            **kwargs: Facets to search for datasets.
 
         Returns:
-            ESGFCatalog: Catalog with new search criteria.
-
-        Examples:
-            >>> import intake_esgf
-            >>> cat = intake_esgf.ESGFCatalog()
-            >>> results = cat.search(variable="clt,tas", frequency="mon", model=["amip", "amip4k"])
+            An ESGFCatalog representing the search results.
         """
         new_facets = self._facets.copy()
         new_facets.update(kwargs)
 
+        logger.info(f"Creating new catalog with search facets {new_facets!r}")
+
         cat = ESGFCatalog(
             url=self._url,
+            params=self._params,
             fields=self._fields,
             constraints=self._constraints,
-            limit=self._limit,
-            params=self._params,
-            requests_kwargs=self._requests_kwargs,
-            storage_options=self._storage_options,
             facets=new_facets,
-            skip_load=True,
-            container=self._container,
-            chunks=self._chunks,
+            limit=self._limit,
+            preset=self._preset,
+            presets=self._presets,
+            preset_file=self._preset_file,
         )
-
-        cat.cat = self
 
         return cat
 
     def _load_preset(self):
-        if not self._skip_load:
-            with open(self._preset_file) as f:
-                data = yaml.safe_load(f.read())
+        """Loads facet presets from file."""
+        if self._presets is not None:
+            return
 
-            if self._preset is None:
-                self._preset = data["default"]
+        logger.info(f"Loading preset from {self._preset_file!r}")
 
-            try:
-                preset = data["presets"][self._preset]
-            except KeyError as e:
-                raise PresetDoesNotExistError(e)
-            else:
-                self._fields += preset["fields"]
-                self._constraints = preset.get("constraints", {})
-            finally:
-                self._skip_load = True
+        with open(self._preset_file) as f:
+            data = yaml.safe_load(f.read())
+
+        if self._preset is None:
+            self._preset = data["default"]
+
+            logger.info(f"Setting default preset to {self._preset!r}")
+
+        self._presets = data["presets"]
+
+        try:
+            preset = data["presets"][self._preset]
+        except KeyError as e:
+            raise PresetDoesNotExistError(e)
+        else:
+            self._fields += preset["fields"]
+            self._constraints = preset.get("constraints", {})
+
+            logger.info(f"Preset fields: {self._fields} constraints: {self._constraints}")
 
     def facet_values(self, include_count=False):
-        """ Gets facets based on current criteria.
+        """Retrieves facets and values.
 
         Args:
-            include_count (bool): Include counts for each value.
+            include_count: Include number of entries for each value.
 
         Returns:
-            dict: Map of facet names and possible values.
+            An ESGFFacetWrapper containing search facets and possible values.
         """
+        self._load_preset()
+
         params = {
             "format": "application/solr+json",
-            "facets": ",".join(list(set(self._fields))),
+            "facets": list(set(self._fields)),
             "limit": 0,
         }
         params.update(self._constraints)
         params.update(self._facets)
 
-        response = requests.get(self._url, params, **self._requests_kwargs)
+        for x in params:
+            if isinstance(params[x], (list, tuple)):
+                params[x] = ",".join(params[x])
 
-        if response.status_code == 400:
-            raise Exception(
-                "Client error, please check facet names/values for correctness."
-            )
+        logger.info(f"Retrieving facet values with parameters {params!r}")
+
+        response = requests.get(self._url, params)
 
         response.raise_for_status()
 
@@ -688,68 +712,124 @@ class ESGFCatalog(intake.catalog.Catalog):
             else:
                 output[x] = y[::2]
 
+        logger.info(f"Retrieved {len(output)} facets with values")
+
         return ESGFFacetWrapper(output)
 
-    def __getitem__(self, key):
-        e = self._entries[key]
-        e._catalog = self
-        e._pmode = self.pmode
-
-        return e()
-
-    def fetch_page(self, offset=0, raw=False, **facets):
-        """ Fetchs a page of search results.
-
-        `facets` are key/value pairs of facets. The value can be str or list of str.
+    def _search_params(self, facets=None):
+        """Builds parameters for search request.
 
         Args:
-            offset (int): Offset of search results.
-            raw (bool): Returns raw JSON rather than pandas DataFrame.
-            **facets: Additional facets used for search parameters.
+            facets: A dict containing override facets.
 
         Returns:
-            dict: Dictionary when `raw` is True.
-            pandas.DataFrame: DataFrame container page of search results.
-
-        Examples:
-            >>> import intake_esgf
-            >>> cat = intake_esgf.ESGFCatalog()
-            >>> page = cat.fetch_page(variable="clt")
+            A dict passed to requests calls.
         """
-        params = self._params.copy()
+        params = self._default_params.copy()
+        # user fields can override the defaults
+        params.update(self._params)
+        params["fields"] = list(set(self._required_fields + self._fields))
         params.update(self._facets)
-        params.update(self._default_params)
-        params["offset"] = offset
-        params["limit"] = self._limit
-        params["fields"] = list(set(self._minimum_fields + self._fields))
+        # user facets can override the defaults
+        params.update(facets or {})
         params.update(self._constraints)
-        params.update(facets)
+        # ensure some defaults are not over written by user
+        params["type"] = "Dataset"
+        params["format"] = "application/solr+json"
+        params["limit"] = self._limit
 
         for x in params:
             if isinstance(params[x], (tuple, list)):
                 params[x] = ",".join(params[x])
 
-        response = requests.get(self._url, params=params, **self._requests_kwargs)
+        return params
+
+    def fetch_files(self, dataset_id):
+        """Fetchs files associated with a dataset.
+
+        Args:
+            dataset_id: Dataset identified used for searching.
+
+        Returns:
+            A DataFrame containing the file results for a dataset.
+        """
+        params = self._search_params()
+        params["offset"] = 0
+        params["query"] = f"dataset_id:{dataset_id}"
+        params["type"] = "File"
+
+        logger.info(f"Fetching dataset {dataset_id!r} files parameters {params!r}")
+
+        response = requests.get(self._url, params=params)
 
         response.raise_for_status()
 
         data = response.json()
 
-        if raw:
-            return data
+        df = pd.DataFrame.from_dict(data["response"]["docs"])
+
+        df = df.apply(fix_col)
+
+        logger.info(f"Retrieved {len(df)} files associated with dataset {dataset_id!r}")
+
+        return df
+
+    def fetch_page(self, offset=0, **kwargs):
+        """Fetchs a page of search results.
+
+        Args:
+            offset: Search offset.
+            **kwargs: Facets and values to search with.
+
+        Returns:
+            A DataFrame containing a page of search results.
+        """
+        params = self._search_params(kwargs)
+        params["offset"] = offset
+
+        logger.info(f"Fetching search result page with parameters {params!r}")
+
+        response = requests.get(self._url, params=params)
+
+        response.raise_for_status()
+
+        data = response.json()
 
         num_found = data["response"]["numFound"]
 
         df = pd.DataFrame.from_dict(data["response"]["docs"])
 
-        def fix_col(x):
-            if isinstance(x[0], (list, tuple)) and len(x[0]) == 1:
-                return x[0][0]
-            return x
-
         df = df.apply(fix_col)
 
+        logger.info(f"Retrieved {len(df)} results")
+
         return num_found, df
+
+    def load(self):
+        """Loads all pages from search results.
+
+        Returns:
+            A DataFrame containing all results from search.
+        """
+        pages = self._entries.num_pages()
+
+        logger.info(f"Loading {pages} pages of search results")
+
+        try:
+            from ipywidgets import IntProgress
+            from IPython.display import display
+        except ImportError:
+            progress = None
+        else:
+            progress = IntProgress(min=0, max=pages)
+
+            display(progress)
+
+        for x in self._entries.pages():
+            if progress is not None:
+                progress.value += 1
+
+        return self._entries._df
 
     def _make_entries_container(self):
         return ESGFCatalogEntries(self)
