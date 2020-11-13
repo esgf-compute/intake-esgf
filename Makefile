@@ -10,15 +10,13 @@ build-env: PKGS := conda-build conda-smithy anaconda-client bump2version
 build-env:
 	$(CONDA) install -y -c conda-forge $(PKGS)
 
-.PHONY: upload
-upload: CONDA_EXTRA := --token=$(CONDA_TOKEN)
-upload: build
-
-.PHONY: build
-build:
+.PHONY: rerender
+rerender:
 	$(CONDA) smithy rerender \
 		--feedstock_directory $(FEEDSTOCK_PATH)
 
+.PHONY: build
+build:
 	$(CONDA) build \
 		-c conda-forge \
 		-m $(FEEDSTOCK_PATH)/.ci_support/linux_64_.yaml \
@@ -28,8 +26,8 @@ build:
 
 .PHONY: build-docs
 build-docs: build-environment
-	$(conda_act) build; \
-		$(conda_cmd) install -c conda-forge sphinx sphinx_rtd_theme recommonmark m2r; \
-		make -C docsrc/ html
+	$(CONDA) install -c conda-forge sphinx sphinx_rtd_theme recommonmark m2r
 
-	@cp -a docsrc/build/html/. docs/
+	@make -C dodsrc/ html
+
+	@cp -a dodsrc/build/html/. docs/
