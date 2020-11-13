@@ -22,7 +22,5 @@ jobs:
           bash conda.sh -b -p ${HOME}/conda
       - name: Setup build environment
         run: make build-env
-      - name: Rerender
-        run: make rerender
       - name: Build & Test
         run: make build 
