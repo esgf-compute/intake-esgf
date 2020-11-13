@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := build
 
-CONDA := $(shell find /opt/conda/bin $(HOME)/conda/bin -type f -name conda 2>/dev/null)
+CONDA := $(shell find /opt/conda/bin $(HOME)/conda/bin $(PWD)/conda/bin -type f -name conda 2>/dev/null)
 CONDA_PATH := $(patsubst %/conda,%,$(CONDA))
 
 FEEDSTOCK_PATH := $(PWD)/feedstock
