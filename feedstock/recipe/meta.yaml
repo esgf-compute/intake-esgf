@@ -1,0 +1,44 @@
+{% set name = "intake-esgf" %}
+{% set version = environ.get('GIT_DESCRIBE_TAG', 'untagged')|string|replace('-','_') %}
+{% set build_number = environ.get('GIT_DESCRIBE_NUMBER', '0') %}
+
+package:
+  name: {{ name|lower }}
+  version: {{ version }}
+
+source:
+  path: {{ environ.get('FEEDSTOCK_ROOT', '../..') }}
+
+build:
+  noarch: python
+  number: {{ build_number }}
+  string: {{ [build_number, ('h' + PKG_HASH), environ.get('GIT_DESCRIBE_HASH', '')]|join('_') }}
+  script: "{{ PYTHON }} -m pip install . -vv"
+
+requirements:
+  host:
+    - python
+    - pip
+  run:
+    - python
+    - intake
+    - intake-xarray
+
+test:
+  imports:
+    - intake_esgf
+    - intake_esgf.core
+    - intake_esgf.tools
+  commands:
+    - pytest -vvv intake_esgf/tests/
+  requires:
+    - pytest
+    - pytest-cov
+    - pytest-mock
+    - ipywidgets
+  source_files:
+    - intake_esgf/tests/
+    - conftest.py
+
+about:
+  home: https://github.com/jasonb5/intake-esgf

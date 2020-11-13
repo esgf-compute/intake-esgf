@@ -1,3 +1,4 @@
+output/
 .tempdir
 examples/test_catalog.yaml
 
