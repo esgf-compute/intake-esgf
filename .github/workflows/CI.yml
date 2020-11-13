@@ -33,13 +33,13 @@ jobs:
 
           make rerender
       - name: Build
-        if: ${{ contains(github.ref, "master") }}
+        if: ${{ contains(github.ref, 'master') }}
         run: |
           export PATH=${HOME}/conda/bin:${PATH}
 
           make build CONDA_EXTRA=--no-anaconda-upload
       - name: Build and Upload
-        if: ${{ startsWith(github.ref, "v") }}
+        if: ${{ startsWith(github.ref, 'v') }}
         env:
           CONDA_TOKEN: ${{ secrets.CONDA_TOKEN }}
         run: |
