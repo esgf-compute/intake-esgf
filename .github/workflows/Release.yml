@@ -1,12 +1,9 @@
-name: CI
+name: Release
 
 on:
   push:
-    branches:
-      - master
-  pull_request:
-    branches:
-      - master
+    tags:
+      - v*
 
 jobs:
   build:
@@ -22,7 +19,7 @@ jobs:
           bash conda.sh -b -p ${HOME}/conda
       - name: Setup build environment
         run: make build-env
-      - name: Rerender
-        run: make rerender
       - name: Build & Test
-        run: make build 
+        env:
+          CONDA_TOKEN: ${{ secrets.CONDA_TOKEN }}
+        run: make build CONDA_TOKEN=${CONDA_TOKEN}
