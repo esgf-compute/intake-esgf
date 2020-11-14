@@ -17,7 +17,9 @@ setup-env:
 .PHONY: build-env
 build-env: PKGS := conda-build conda-smithy anaconda-client bump2version
 build-env: setup-env
-	$(CONDA) install -y -c conda-forge $(PKGS)
+	$(CONDA) install -y \
+		-c conda-forge -c cdat \
+		$(PKGS)
 
 .PHONY: rerender
 rerender: setup-env
@@ -31,7 +33,7 @@ build: setup-env
 	cd $(SRC_PATH)
 
 	$(CONDA) build \
-		-c conda-forge \
+		-c conda-forge -c cdat \
 		-m $(FEEDSTOCK_PATH)/.ci_support/linux_64_.yaml \
 		--output-folder $(PWD)/output \
 		$(CONDA_BUILD_EXTRA) \

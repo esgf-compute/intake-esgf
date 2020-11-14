@@ -23,6 +23,7 @@ requirements:
     - python
     - intake
     - intake-xarray
+    - esgf-compute-api
 
 test:
   imports:

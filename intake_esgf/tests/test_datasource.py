@@ -18,12 +18,12 @@ def test_fix_col():
 
 def test_esgfopendapsource(test_data, mocker):
     data = core.ESGFOpenDapSource(
-        test_data,
+        [test_data],
         chunks={"time": 10},
         metadata={"source": "testdata"},
         xarray_kwargs={"decode_times": False})
 
-    assert data._url == test_data
+    assert data._url == [test_data,]
     assert data._chunks == {"time": 10}
     assert data.metadata == {"source": "testdata"}
 
@@ -37,3 +37,9 @@ def test_esgfopendapsource(test_data, mocker):
     assert data.read() == data._ds
     assert data.read_chunked() == data._ds
     assert data.to_dask() == data._ds
+
+    vars = data.to_esgf_compute('tas')
+
+    assert len(vars) == 1
+    assert vars[0].uri == test_data
+    assert vars[0].var_name == 'tas'

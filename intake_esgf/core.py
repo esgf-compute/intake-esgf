@@ -60,6 +60,9 @@ class ESGFOpenDapSource(base.DataSource):
             xarray_kwargs: Arguments passed to xarray.
             metadata: Metadata describing the source.
         """
+        if not isinstance(url, list):
+            url = list(url)
+
         self._url = url
         self._chunks = chunks
         self._kwargs = xarray_kwargs or kwargs
@@ -80,6 +83,13 @@ class ESGFOpenDapSource(base.DataSource):
             self._ds = xr.open_mfdataset(self._url, chunks=self._chunks, **self._kwargs)
         else:
             self._ds = xr.open_dataset(self._url[0], chunks=self._chunks, **self._kwargs)
+
+    def to_esgf_compute(self, variable):
+        """Converts urls to cwt variables.
+        """
+        import cwt
+
+        return [cwt.Variable(x, variable) for x in self._url]
 
     def _get_schema(self):
         """Builds a schema for the datasource.
