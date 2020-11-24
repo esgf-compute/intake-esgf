@@ -292,10 +292,7 @@ class ESGFCatalogEntries(abc.Mapping):
 
     def num_pages(self):
         """Returns the number of pages."""
-        if self._num_found is None:
-            self._next_page(0)
-
-        return math.ceil(self._num_found / self._catalog._limit)
+        return math.ceil(len(self) / self._catalog._limit)
 
     def __iter__(self):
         """Generates identifiers for each entry."""
