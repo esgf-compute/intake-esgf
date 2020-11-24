@@ -279,7 +279,7 @@ class ESGFCatalogEntries(abc.Mapping):
         offset = 0
         limit = self._catalog._limit
 
-        while offset < self._num_found:
+        while offset < len(self):
             page = self._next_page(offset)
 
             page_size = len(page)
