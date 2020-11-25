@@ -17,8 +17,17 @@ def test_fix_col():
     assert df.double.to_list() == [["item1", "item2"]]
 
 def test_esgfopendapsource(test_data, mocker):
+    dataset = pd.DataFrame()
+
+    files = pd.DataFrame([
+        {'variable': 'tas'},
+        {'variable': 'clt'},
+    ])
+
     data = core.ESGFOpenDapSource(
         [test_data],
+        files=files,
+        dataset=dataset,
         chunks={"time": 10},
         metadata={"source": "testdata"},
         xarray_kwargs={"decode_times": False})
@@ -37,6 +46,7 @@ def test_esgfopendapsource(test_data, mocker):
     assert data.read() == data._ds
     assert data.read_chunked() == data._ds
     assert data.to_dask() == data._ds
+    assert data.variables == ['tas', 'clt']
 
     vars = data.to_esgf_compute('tas')
 

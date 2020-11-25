@@ -51,7 +51,7 @@ class ESGFOpenDapSource(base.DataSource):
     container = "xarray"
     partition_access = False
 
-    def __init__(self, url, chunks=None, xarray_kwargs=None, metadata=None, **kwargs):
+    def __init__(self, url, dataset=None, files=None, chunks=None, xarray_kwargs=None, metadata=None, **kwargs):
         """ESGFOpenDapSource __init__.
 
         Args:
@@ -66,9 +66,15 @@ class ESGFOpenDapSource(base.DataSource):
         self._url = url
         self._chunks = chunks
         self._kwargs = xarray_kwargs or kwargs
+        self._dataset = dataset
+        self._files = files
         self._ds = None
 
         super(ESGFOpenDapSource, self).__init__(metadata=metadata)
+
+    @property
+    def variables(self):
+        return self._files.variable.unique().tolist()
 
     def _open_dataset(self):
         """Opens an xarray dataset.
@@ -194,6 +200,8 @@ class ESGFCatalogEntry(local.LocalCatalogEntry):
             raise ESGFEntryMissingDriver(name)
 
         args = {
+            "dataset": dataset,
+            "files": files,
             "url": files.url.apply(get_file_access, method=candidates[0][0]).to_list(),
         }
 
